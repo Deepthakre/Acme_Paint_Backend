@@ -22,6 +22,10 @@ function formatDuration(ms: number): string {
   return `${minutes}m`;
 }
 
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export const listProducts = asyncHandler(async (req: Request, res: Response) => {
   const params = parsePagination(req.query as Record<string, unknown>);
   const filter: Record<string, unknown> = {};
@@ -29,6 +33,15 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   if (req.query.batchId) filter.batchId = req.query.batchId;
   if (req.query.holder) filter.holder = req.query.holder;
   if (req.query.active !== undefined) filter.active = req.query.active === 'true';
+
+  // Free-text search over QR / batch / product name (case-insensitive, contains).
+  // The term is regex-escaped and length-capped so user input can't inject a pattern.
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 60) : '';
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: 'i' };
+    filter.$or = [{ qr: rx }, { batchId: rx }, { product: rx }];
+  }
+
   const result = await paginate(Product.find(filter), Product.countDocuments(filter), params);
   res.json({ success: true, ...result });
 });
@@ -293,8 +306,25 @@ export const forceConfirmDelivery = asyncHandler(async (req: Request, res: Respo
   });
 });
 
+
+const PRODUCT_STATUSES = ['FACTORY', 'TRANSIT', 'DEALER', 'SOLD', 'RETURNED'];
+
 export const getFullProductLog = asyncHandler(async (req: Request, res: Response) => {
   const params = parsePagination(req.query as Record<string, unknown>);
-  const result = await paginate(Product.find(), Product.countDocuments(), params);
+  const filter: Record<string, unknown> = {};
+
+  // Category filter — whitelisted so only real statuses ever reach the query.
+  const status = typeof req.query.status === 'string' ? req.query.status.trim().toUpperCase() : '';
+  if (PRODUCT_STATUSES.includes(status)) filter.status = status;
+
+  // Free-text search over QR / batch / product / holder (case-insensitive, contains).
+  // The term is regex-escaped and length-capped so user input can't inject a pattern.
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 60) : '';
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: 'i' };
+    filter.$or = [{ qr: rx }, { batchId: rx }, { product: rx }, { holder: rx }];
+  }
+
+  const result = await paginate(Product.find(filter), Product.countDocuments(filter), params);
   res.json({ success: true, ...result });
 });
