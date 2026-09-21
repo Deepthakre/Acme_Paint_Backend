@@ -1,13 +1,14 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { ApiError } from '../utils/ApiError';
-import { Painter } from '../models/Painter';
+import { Painter ,type IPainter} from '../models/Painter';
 import { Reward } from '../models/Reward';
 import { Withdrawal } from '../models/Withdrawal';
 import { Product } from '../models/Product';
 import { nextPainterId, nextRewardId, nextWithdrawalId, extractSignedQrString, verifyQrString } from '../utils/ids';
 import { parsePagination, paginate } from '../utils/pagination';
 import { nowStr } from '../services/invoice.service';
+
 
 export const registerPainter = asyncHandler(async (req: Request, res: Response) => {
   const { name, mobile, upiId, city, state, experience, painterType } = req.body;
@@ -161,5 +162,71 @@ export const listWithdrawals = asyncHandler(async (req: Request, res: Response) 
   const filter: Record<string, unknown> = {};
   if (req.query.status) filter.status = req.query.status;
   const result = await paginate(Withdrawal.find(filter), Withdrawal.countDocuments(filter), params);
+  res.json({ success: true, ...result });
+});
+
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Admin: painters who have claimed the ₹50 bucket reward at least once
+ * (totalEarned is credited on every successful claim), top earners first.
+ * Paginated + searchable; each page is enriched with claim count and
+ * first/last claim time straight from the Reward collection.
+ */
+export const listRewardPainters = asyncHandler(async (req: Request, res: Response) => {
+  const params = parsePagination(req.query as Record<string, unknown>);
+  const filter: Record<string, unknown> = { totalEarned: { $gt: 0 } };
+
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 60) : '';
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: 'i' };
+    filter.$or = [{ id: rx }, { name: rx }, { mobile: rx }, { city: rx }, { upiId: rx }];
+  }
+
+  // Fixed compound sort (most earned first, _id as tie-break) so "Show more"
+  // pages never skip or repeat painters who have the same total.
+  const result = await paginate(Painter.find(filter), Painter.countDocuments(filter), {
+    ...params,
+    sort: '-totalEarned -_id',
+  });
+  const painters = result.data as unknown as IPainter[];
+
+  const ids = painters.map((p) => p.id);
+  const stats = ids.length
+    ? await Reward.aggregate<{ _id: string; claims: number; firstClaimedAt: Date; lastClaimedAt: Date }>([
+        { $match: { painterId: { $in: ids }, status: 'CREDITED' } },
+        {
+          $group: {
+            _id: '$painterId',
+            claims: { $sum: 1 },
+            firstClaimedAt: { $min: '$createdAt' },
+            lastClaimedAt: { $max: '$createdAt' },
+          },
+        },
+      ])
+    : [];
+  const byPainter = new Map(stats.map((s) => [s._id, s]));
+
+  const data = painters.map((p) => {
+    const s = byPainter.get(p.id);
+    return {
+      ...p,
+      claims: s?.claims ?? 0,
+      firstClaimedAt: s?.firstClaimedAt ?? null,
+      lastClaimedAt: s?.lastClaimedAt ?? null,
+    };
+  });
+
+  res.json({ success: true, data, pagination: result.pagination });
+});
+
+/** Admin: every individual reward claim (newest first), optionally for one painter. Feeds the Excel report. */
+export const listRewards = asyncHandler(async (req: Request, res: Response) => {
+  const params = parsePagination(req.query as Record<string, unknown>);
+  const filter: Record<string, unknown> = {};
+  if (typeof req.query.painterId === 'string' && req.query.painterId.trim()) filter.painterId = req.query.painterId.trim();
+  const result = await paginate(Reward.find(filter), Reward.countDocuments(filter), { ...params, sort: '-_id' });
   res.json({ success: true, ...result });
 });

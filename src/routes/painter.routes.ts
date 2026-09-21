@@ -25,5 +25,6 @@ router.post('/:painterId/withdraw', validate({ params: painterIdParamSchema, bod
 
 // Admin-only: view/manage withdrawal requests.
 router.get('/admin/withdrawals', requireAuth, requireRole('admin'), validate({ query: paginationQuerySchema }), ctrl.listWithdrawals);
-
+router.get('/admin/reward-painters', requireAuth, requireRole('admin'), validate({ query: paginationQuerySchema }), ctrl.listRewardPainters);
+router.get('/admin/rewards', requireAuth, requireRole('admin'), validate({ query: paginationQuerySchema }), ctrl.listRewards);
 export default router;
